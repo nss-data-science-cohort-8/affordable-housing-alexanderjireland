@@ -1,0 +1,58 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(sf)
+```
+
+
+```{r}
+filtered_sales = read.csv("../data/filtered_sales.csv")
+LIHTC = read.csv("../data/LIHTC.csv")
+barnes = read.csv("../data/barnes.csv")
+property_deets = read.csv("../data/property_details.csv")
+```
+	
+TNA20130015 - PARK AT RICHARDS ROAD APTS
+
+```{r}
+LIHTC |> filter(HUD_ID == "TNA20130015")
+```
+
+```{r}
+prra_lat = LIHTC |> filter(HUD_ID == "TNA20130015") |> pull(LATITUDE)
+prra_lon = LIHTC |> filter(HUD_ID == "TNA20130015") |> pull(LONGITUDE)
+prra_df <- LIHTC |> filter(HUD_ID == "TNA20130015")
+
+prra_loc_sf <- st_as_sf(prra_df, coords = c("LONGITUDE", "LATITUDE"), crs = 4326)
+prra_loc_sf
+```
+```{r}
+radius <- st_buffer(prra_loc_sf, dist = 2000)
+print(radius$geometry)
+
+property_deets <- property_deets |> 
+mutate(
+    latitude = as.numeric(str_extract(centroid, "\\((.+),", group = 1)),
+    longitude = as.numeric(str_extract(centroid, ",(.+)\\)", group = 1))
+    )
+property_deets
+```
+
+```{r}
+property_deets_geo <- st_as_sf(property_deets |> 
+  drop_na(latitude), 
+  coords = c('longitude', 'latitude'),
+  crs = st_crs(radius))
+
+sum(is.na(st_geometry(property_deets_geo)))
+
+```
+
+```{r}
+radius <- radius |> mutate(in_buffer = TRUE)
+prra_neighbors <- st_join(property_deets_geo, radius, join = st_intersects)
+```
