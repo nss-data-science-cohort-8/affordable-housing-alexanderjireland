@@ -13,7 +13,7 @@ library(sf)
 filtered_sales = read.csv("../data/filtered_sales.csv")
 LIHTC = read.csv("../data/LIHTC.csv")
 barnes = read.csv("../data/barnes.csv")
-property_deets = read.csv("../data/property_details.csv")
+property_details = read.csv("../data/property_details.csv")
 ```
 	
 TNA20130015 - PARK AT RICHARDS ROAD APTS
@@ -23,36 +23,111 @@ LIHTC |> filter(HUD_ID == "TNA20130015")
 ```
 
 ```{r}
+
+
+prra_df <- LIHTC |> filter(HUD_ID == "TNA20130015")
+property_details <- property_details |> mutate(
+    longitude = as.numeric(str_extract(centroid, "\\((.+),", group = 1)),
+    latitude = as.numeric(str_extract(centroid, ",(.+)\\)", group = 1)
+    ))
+
+properties <- inner_join(property_details, filtered_sales)
+properties
+
 prra_lat = LIHTC |> filter(HUD_ID == "TNA20130015") |> pull(LATITUDE)
 prra_lon = LIHTC |> filter(HUD_ID == "TNA20130015") |> pull(LONGITUDE)
-prra_df <- LIHTC |> filter(HUD_ID == "TNA20130015")
 
-prra_loc_sf <- st_as_sf(prra_df, coords = c("LONGITUDE", "LATITUDE"), crs = 4326)
-prra_loc_sf
+
+PRRA_LIHTC <- LIHTC |> filter(HUD_ID == "TNA20130015")
 ```
 ```{r}
-radius <- st_buffer(prra_loc_sf, dist = 2000)
-print(radius$geometry)
-
-property_deets <- property_deets |> 
-mutate(
-    latitude = as.numeric(str_extract(centroid, "\\((.+),", group = 1)),
-    longitude = as.numeric(str_extract(centroid, ",(.+)\\)", group = 1))
-    )
-property_deets
+#install.packages("geosphere")
+library(geosphere)
+distance_value <- distVincentySphere(c(-110.32,40.5524),c(-112.3638,36.266))
+distance_value
 ```
 
+
 ```{r}
-property_deets_geo <- st_as_sf(property_deets |> 
-  drop_na(latitude), 
-  coords = c('longitude', 'latitude'),
-  crs = st_crs(radius))
-
-sum(is.na(st_geometry(property_deets_geo)))
-
+new_properties <- properties |> 
+  drop_na(latitude)
+new_properties
+properties
 ```
 
 ```{r}
-radius <- radius |> mutate(in_buffer = TRUE)
-prra_neighbors <- st_join(property_deets_geo, radius, join = st_intersects)
+distance_func <- function(row) {
+  distVincentySphere(c(as.numeric(row[["latitude"]]), as.numeric(row[["longitude"]])), c(PRRA_LIHTC[["LATITUDE"]], PRRA_LIHTC[["LONGITUDE"]]))
+}
 ```
+
+
+```{r}
+distance_func <- function(row) {
+  distVincentySphere(c(as.numeric(row[["longitude"]]), as.numeric(row[["latitude"]])),c(as.numeric(prra_lon), as.numeric(prra_lat)))
+}
+
+test_properties <- properties |> mutate(distance_from_prra_m = apply(properties, 1, distance_func))
+test_properties <- test_properties |> mutate(distance_from_prra = 3.28084 * distance_from_prra_m)
+```
+
+```{r}
+test_properties |> arrange(distance_from_prra)
+```
+
+
+```{r}
+test_properties <- test_properties |> 
+  mutate(group = case_when(distance_from_prra < 2000 ~ "treatment",
+       distance_from_prra >= 2000 & distance_from_prra < 3000 ~ "control")) |> 
+  arrange(distance_from_prra) |> 
+  drop_na(group)
+test_properties
+
+```
+
+```{r}
+prra_date <- PRRA_LIHTC |> pull(YR_ALLOC)
+prra_date <- as.numeric(prra_date)
+print(prra_date)
+pre_post_properties <- test_properties |> 
+  mutate(year = as.numeric(str_extract(ownerdate, "(....)", group = 1))) |> 
+  mutate(pre_post = case_when(year >= prra_date - 5 & year <= prra_date - 1 ~ "pre",
+year <= prra_date + 5 & year >= prra_date + 1 ~ "post")) |> 
+  drop_na(pre_post)
+pre_post_properties
+```
+
+```{r}
+pre_post_properties |> summary(distance_from_prra)
+```
+
+```{r}
+pre_post_properties_summarized <- pre_post_properties |> group_by(group, pre_post) |> summarize(mean_home_price = mean(amount))
+pre_post_properties_summarized
+```
+```{r}
+post_control <- pre_post_properties_summarized |> 
+  filter(group == "control" & pre_post == "post") |> 
+  pull(mean_home_price)
+pre_control <- pre_post_properties_summarized |> filter(group == "control" & pre_post == "pre") |> 
+  pull(mean_home_price)
+
+post_treatment <- pre_post_properties_summarized |> filter(group == "treatment" & pre_post == "post") |> 
+  pull(mean_home_price)
+
+pre_treatment <- pre_post_properties_summarized |> filter(group == "treatment" & pre_post == "pre") |> 
+  pull(mean_home_price)
+
+diff_in_diff = (post_treatment - pre_treatment) - (post_control - pre_control)
+print(diff_in_diff)
+```
+It looks like sales prices went up!
+
+```{r}
+extra_features_model <- lm("amount ~ group * pre_post + square_footage + year_built", data = pre_post_properties)
+
+summary(extra_features_model)
+
+```
+
